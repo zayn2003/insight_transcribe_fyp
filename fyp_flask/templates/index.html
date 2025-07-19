@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Meeting Insights Generator</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Real-Time Meeting Insights</h1>
+            <p>Get live transcription and AI-generated insights during your meetings</p>
+        </header>
+
+        <div class="controls">
+            <button id="startBtn">Start Meeting</button>
+            <button id="stopBtn" disabled>Stop Meeting</button>
+        </div>
+
+        <div class="status" id="status">Ready to start meeting</div>
+
+        <div class="panels">
+            <div class="panel">
+                <h2>Live Transcript</h2>
+                <div class="transcript" id="transcript"></div>
+            </div>
+
+            <div class="panel">
+                <h2>Key Insights</h2>
+                <div class="insights" id="insights"></div>
+            </div>
+        </div>
+
+        <footer>
+            <p>Insight Transcribe bring trancriptions to more detailed outlook</p>
+        </footer>
+    </div>
+
+    <script>
+        const startBtn     = document.getElementById('startBtn');
+        const stopBtn      = document.getElementById('stopBtn');
+        const statusEl     = document.getElementById('status');
+        const transcriptEl = document.getElementById('transcript');
+        const insightsEl   = document.getElementById('insights');
+
+        let eventSource = null;
+
+        const updateStatus = msg => statusEl.textContent = msg;
+
+        /* ──────── Start recording ──────── */
+        startBtn.addEventListener('click', async () => {
+            const res = await fetch('/start_recording', { method: 'POST' });
+            if (!res.ok) return updateStatus('Error starting recording');
+
+            startBtn.disabled = true;
+            stopBtn.disabled  = false;
+            startBtn.classList.add('recording');
+            updateStatus('Recording in progress.');
+
+            transcriptEl.innerHTML = '';
+            insightsEl.innerHTML   = '';
+
+            if (eventSource) eventSource.close();
+            eventSource = new EventSource('/stream');
+
+            eventSource.onmessage = e => {
+                const data = JSON.parse(e.data);
+
+                /* --------- Transcript (partials only) --------- */
+                if (data.transcript && data.transcript.length) {
+                    const raw   = data.transcript[0];   // always latest partial
+                    const clean = raw.substring(8);     // strip "PARTIAL: "
+
+                    // decide: extend (replace) or append?
+                    const shouldReplace =
+                        transcriptEl.lastChild &&
+                        transcriptEl.lastChild.classList.contains('partial') &&
+                        clean.startsWith(transcriptEl.lastChild.textContent);
+
+                    if (shouldReplace) {
+                        transcriptEl.lastChild.textContent = clean;  // extend same line
+                    } else {
+                        const p = document.createElement('p');       // new segment
+                        p.textContent = clean;
+                        p.classList.add('partial');
+                        transcriptEl.appendChild(p);
+                    }
+                    transcriptEl.scrollTop = transcriptEl.scrollHeight;
+                }
+
+                /* --------- Insights --------- */
+                if (data.insights && data.insights.length) {
+                    data.insights.forEach(text => {
+                        const div = document.createElement('div');
+
+                        if (text.includes('FINAL INSIGHT:')) {
+                            div.classList.add('final');
+                            text = text.replace('FINAL INSIGHT:', 'Final Summary:');
+                        } else if (text.includes('INSIGHT:')) {
+                            text = text.replace('INSIGHT:', 'Insight:');
+                        }
+
+                        text.split('\n').forEach(line => {
+                            if (line.trim()) {
+                                const p = document.createElement('p');
+                                p.textContent = line;
+                                div.appendChild(p);
+                            }
+                        });
+
+                        insightsEl.appendChild(div);
+                    });
+                    insightsEl.scrollTop = insightsEl.scrollHeight;
+                }
+            };
+        });
+
+        /* ──────── Stop recording ──────── */
+        stopBtn.addEventListener('click', async () => {
+            const res = await fetch('/stop_recording', { method: 'POST' });
+            if (!res.ok) return updateStatus('Error stopping recording');
+
+            const result = await res.json();
+
+            if (result.pdf_url) {
+                const link       = document.createElement('a');
+                link.href        = result.pdf_url;
+                link.textContent = 'Download Meeting Report';
+                link.className   = 'pdf-link';
+                link.target      = '_blank';
+                insightsEl.prepend(link);
+            }
+
+            startBtn.disabled = false;
+            stopBtn.disabled  = true;
+            startBtn.classList.remove('recording');
+            updateStatus('Meeting completed. Insights generated.');
+
+            if (eventSource) eventSource.close();
+        });
+    </script>
+</body>
+</html>
